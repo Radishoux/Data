@@ -1,31 +1,86 @@
 import React from 'react';
+import { Text, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import HomeScreen from '../screens/HomeScreen';
-import ExploreScreen from '../screens/ExploreScreen';
-import SettingsScreen from '../screens/SettingsScreen';
+import { MainTabParamList } from './types';
+import QuestionScreen from '../screens/question/QuestionScreen';
+import ProfileScreen from '../screens/profile/ProfileScreen';
+import FriendsStack from './FriendsStack';
 
-const Tab = createBottomTabNavigator();
+const Tab = createBottomTabNavigator<MainTabParamList>();
 
-export default function TabNavigator() {
+const COLORS = {
+  background: '#0a0a0a',
+  surface: '#111111',
+  border: '#222222',
+  accent: '#7C3AED',
+  text: '#ffffff',
+  muted: '#666666',
+};
+
+interface TabIconProps {
+  symbol: string;
+  focused: boolean;
+}
+
+const TabIcon: React.FC<TabIconProps> = ({ symbol, focused }) => (
+  <Text style={[styles.tabIcon, { color: focused ? COLORS.accent : COLORS.muted }]}>
+    {symbol}
+  </Text>
+);
+
+const TabNavigator: React.FC = () => {
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: '#111111',
-          borderTopColor: '#222222',
+          backgroundColor: COLORS.surface,
+          borderTopColor: COLORS.border,
+          borderTopWidth: 1,
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 6,
         },
-        tabBarActiveTintColor: '#ffffff',
-        tabBarInactiveTintColor: '#555555',
+        tabBarActiveTintColor: COLORS.accent,
+        tabBarInactiveTintColor: COLORS.muted,
         tabBarLabelStyle: {
           fontSize: 11,
-          letterSpacing: 0.5,
+          fontWeight: '600',
         },
       }}
     >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Explore" component={ExploreScreen} />
-      <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen
+        name="Question"
+        component={QuestionScreen}
+        options={{
+          tabBarLabel: 'Question',
+          tabBarIcon: ({ focused }) => <TabIcon symbol="📝" focused={focused} />,
+        }}
+      />
+      <Tab.Screen
+        name="Profile"
+        component={ProfileScreen}
+        options={{
+          tabBarLabel: 'Profile',
+          tabBarIcon: ({ focused }) => <TabIcon symbol="👤" focused={focused} />,
+        }}
+      />
+      <Tab.Screen
+        name="Friends"
+        component={FriendsStack}
+        options={{
+          tabBarLabel: 'Friends',
+          tabBarIcon: ({ focused }) => <TabIcon symbol="👥" focused={focused} />,
+        }}
+      />
     </Tab.Navigator>
   );
-}
+};
+
+const styles = StyleSheet.create({
+  tabIcon: {
+    fontSize: 20,
+  },
+});
+
+export default TabNavigator;
