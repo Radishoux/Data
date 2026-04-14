@@ -10,45 +10,8 @@ import {
   Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-
-// Inline store types since store file is not yet wired
-interface Answer {
-  id: string;
-  userId: string;
-  questionId: string;
-  content: string;
-  answeredAt: string;
-}
-
-// Minimal store hook fallback — replace with real useStore once wired
-let _answers: Answer[] = [];
-let _addAnswer: (a: Answer) => void = (a) => { _answers = [..._answers, a]; };
-
-function useStore() {
-  return {
-    user: { id: 'user_1', nickname: 'Rudy', createdAt: '2024-01-01' },
-    answers: _answers,
-    addAnswer: _addAnswer,
-  };
-}
-
-// ─── Mock today's question ───────────────────────────────────────────────────
-const TODAY_QUESTION = {
-  id: 'q_2026_04_15',
-  text: 'If you could master any skill overnight, what would it be and why?',
-  date: '2026-04-15',
-  category: 'Ambition',
-};
-
-const CATEGORY_EMOJI: Record<string, string> = {
-  Ambition: '🚀',
-  Personality: '🧠',
-  Memory: '💭',
-  Values: '⚖️',
-  Social: '👥',
-  Creative: '🎨',
-  Default: '✨',
-};
+import { useStore } from '../../store/useStore';
+import { getTodayQuestion, CATEGORY_EMOJI } from '../../data/questions';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getTodayString(): string {
@@ -75,7 +38,7 @@ export default function QuestionScreen() {
   const [submitted, setSubmitted] = useState(false);
 
   const todayStr = getTodayString();
-  const question = TODAY_QUESTION;
+  const question = getTodayQuestion();
 
   // Check if already answered
   const existingAnswer = answers.find((a) => a.questionId === question.id);
@@ -83,7 +46,7 @@ export default function QuestionScreen() {
   const displayedAnswer = existingAnswer?.content ?? (submitted ? inputText : '');
 
   const categoryEmoji =
-    CATEGORY_EMOJI[question.category ?? 'Default'] ?? CATEGORY_EMOJI.Default;
+    CATEGORY_EMOJI[question.category ?? 'Wild Card'] ?? '✨';
 
   function handleSubmit() {
     const trimmed = inputText.trim();
