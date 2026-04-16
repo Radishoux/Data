@@ -1,61 +1,71 @@
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { User, Answer } from '../types';
+import { usersAPI } from '../services/api';
 
 interface AppState {
-  // User
   user: User | null;
-  hasOnboarded: boolean;
-  // Data
+  token: string | null;
+  isAuthenticated: boolean;
+  isLoading: boolean; // true while checking stored token on app start
   answers: Answer[];
-  // Actions
   setUser: (user: User) => void;
-  setHasOnboarded: (val: boolean) => void;
+  setToken: (token: string) => void;
+  setAuthenticated: (val: boolean) => void;
+  setLoading: (val: boolean) => void;
   addAnswer: (answer: Answer) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
+  // initAuth: called on app start, checks AsyncStorage for token
+  initAuth: () => Promise<void>;
 }
 
 export const useStore = create<AppState>((set) => ({
-  // Mock initial state for development
-  user: {
-    id: 'me',
-    nickname: 'You',
-    avatarUri: undefined,
-    createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-  },
-  hasOnboarded: true, // set to true so we skip onboarding during dev
-  answers: [
-    {
-      id: 'a1',
-      userId: 'me',
-      questionId: 'q_past1',
-      content: 'Definitely Python — automation is magic.',
-      answeredAt: new Date(Date.now() - 6 * 86400000).toISOString(),
-    },
-    {
-      id: 'a2',
-      userId: 'me',
-      questionId: 'q_past2',
-      content: 'Music, it brings people together in a way nothing else can.',
-      answeredAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-    },
-    {
-      id: 'a3',
-      userId: 'me',
-      questionId: 'q_past3',
-      content: 'Sunrise coffee on my balcony. Simple but perfect.',
-      answeredAt: new Date(Date.now() - 4 * 86400000).toISOString(),
-    },
-  ],
+  user: null,
+  token: null,
+  isAuthenticated: false,
+  isLoading: true,
+  answers: [],
 
-  // Actions
   setUser: (user: User) => set({ user }),
-  setHasOnboarded: (val: boolean) => set({ hasOnboarded: val }),
+  setToken: (token: string) => set({ token }),
+  setAuthenticated: (val: boolean) => set({ isAuthenticated: val }),
+  setLoading: (val: boolean) => set({ isLoading: val }),
   addAnswer: (answer: Answer) =>
     set((state) => ({ answers: [...state.answers, answer] })),
-  logout: () =>
+
+  logout: async () => {
+    await AsyncStorage.removeItem('auth_token');
     set({
       user: null,
-      hasOnboarded: false,
+      token: null,
+      isAuthenticated: false,
       answers: [],
-    }),
+    });
+  },
+
+  initAuth: async () => {
+    set({ isLoading: true });
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (token) {
+        try {
+          const response = await usersAPI.getMe();
+          set({
+            user: response.data,
+            token,
+            isAuthenticated: true,
+          });
+        } catch (error: any) {
+          // If 401, token is invalid — clear it
+          if (error.response?.status === 401) {
+            await AsyncStorage.removeItem('auth_token');
+          }
+        }
+      }
+    } catch (_) {
+      // AsyncStorage read failed — proceed as unauthenticated
+    } finally {
+      set({ isLoading: false });
+    }
+  },
 }));

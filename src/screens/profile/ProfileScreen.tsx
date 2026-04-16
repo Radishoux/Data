@@ -1,100 +1,42 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Image,
+  ActivityIndicator,
 } from 'react-native';
+import { useNavigation, CompositeNavigationProp } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { useStore } from '../../store/useStore';
+import { answersAPI, usersAPI, questionsAPI, friendsAPI } from '../../services/api';
+import { Answer, Question, User } from '../../types';
+import Avatar from '../../components/Avatar';
+import { ProfileStackParamList, MainTabParamList } from '../../navigation/types';
 
-// Inline store types since store file is not yet wired
-interface User {
-  id: string;
-  nickname: string;
-  avatarUri?: string;
-  createdAt: string;
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface EnrichedAnswer extends Answer {
+  questionText: string;
+  category?: string;
 }
 
-// Minimal store hook fallback — replace with real useStore once wired
-function useStore() {
-  return {
-    user: {
-      id: 'user_1',
-      nickname: 'Rudy',
-      avatarUri: undefined,
-      createdAt: '2024-01-15',
-    } as User,
-    answers: [] as { id: string; userId: string; questionId: string; content: string; answeredAt: string }[],
-  };
-}
+type ProfileNav = CompositeNavigationProp<
+  NativeStackNavigationProp<ProfileStackParamList, 'ProfileMain'>,
+  BottomTabNavigationProp<MainTabParamList>
+>;
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
-const MOCK_ANSWERS = [
-  {
-    id: 'a1',
-    questionId: 'q_2026_04_14',
-    questionText: 'What is the one habit that has changed your life the most?',
-    content:
-      'Waking up at 6am and spending the first hour without my phone. It completely rewired how I think and plan my days.',
-    answeredAt: '2026-04-14',
-  },
-  {
-    id: 'a2',
-    questionId: 'q_2026_04_13',
-    questionText: 'Describe the last time you felt truly proud of yourself.',
-    content:
-      'When I shipped my first side project that real users actually paid for. It was small but it felt like everything clicked.',
-    answeredAt: '2026-04-13',
-  },
-  {
-    id: 'a3',
-    questionId: 'q_2026_04_12',
-    questionText: 'What do you wish you had started earlier in life?',
-    content: 'Learning to say no. I spent years overcommitting and burning out. Boundaries are freedom.',
-    answeredAt: '2026-04-12',
-  },
-  {
-    id: 'a4',
-    questionId: 'q_2026_04_11',
-    questionText: 'If your 10-year-old self met you today, what would surprise them most?',
-    content:
-      'That I actually enjoy cooking. As a kid I thought it was the most boring adult activity imaginable.',
-    answeredAt: '2026-04-11',
-  },
-  {
-    id: 'a5',
-    questionId: 'q_2026_04_10',
-    questionText: 'What is something you believe that most people around you do not?',
-    content:
-      'That rest is productive. Most people I know feel guilty for doing nothing. I think nothing-time is where the best ideas live.',
-    answeredAt: '2026-04-10',
-  },
-];
-
-const MOCK_STATS = {
-  answers: 47,
-  friends: 12,
-  reactions: 134,
-};
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function getInitials(nickname: string): string {
-  return nickname
-    .split(' ')
-    .map((w) => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatMemberSince(isoDate: string): string {
-  const d = new Date(isoDate + 'T12:00:00');
+  const d = new Date(isoDate + (isoDate.includes('T') ? '' : 'T12:00:00'));
   return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function formatAnswerDate(isoDate: string): string {
-  const d = new Date(isoDate + 'T12:00:00');
+  const d = new Date(isoDate + (isoDate.includes('T') ? '' : 'T12:00:00'));
   return d.toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -102,20 +44,9 @@ function formatAnswerDate(isoDate: string): string {
   });
 }
 
-// ─── Avatar ───────────────────────────────────────────────────────────────────
-function Avatar({ user }: { user: User }) {
-  if (user.avatarUri) {
-    return <Image source={{ uri: user.avatarUri }} style={styles.avatarImage} />;
-  }
-  return (
-    <View style={styles.avatarPlaceholder}>
-      <Text style={styles.avatarInitials}>{getInitials(user.nickname)}</Text>
-    </View>
-  );
-}
-
 // ─── Stat Item ────────────────────────────────────────────────────────────────
-function StatItem({ value, label }: { value: number; label: string }) {
+
+function StatItem({ value, label }: { value: number | string; label: string }) {
   return (
     <View style={styles.statItem}>
       <Text style={styles.statValue}>{value}</Text>
@@ -125,16 +56,8 @@ function StatItem({ value, label }: { value: number; label: string }) {
 }
 
 // ─── Answer Card ─────────────────────────────────────────────────────────────
-function AnswerCard({
-  item,
-}: {
-  item: {
-    id: string;
-    questionText: string;
-    content: string;
-    answeredAt: string;
-  };
-}) {
+
+function AnswerCard({ item }: { item: EnrichedAnswer }) {
   return (
     <View style={styles.answerCard}>
       <View style={styles.answerCardTop}>
@@ -150,14 +73,77 @@ function AnswerCard({
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+
 export default function ProfileScreen() {
-  const { user } = useStore();
+  const storeUser = useStore((s) => s.user);
+  const setUser = useStore((s) => s.setUser);
+
+  const [user, setLocalUser] = useState<User | null>(storeUser);
+  const [answers, setAnswers] = useState<EnrichedAnswer[]>([]);
+  const [friendsCount, setFriendsCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const navigation = useNavigation<ProfileNav>();
+
+  // ── Fetch ────────────────────────────────────────────────────────────────
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [meRes, answersRes, questionsRes, friendsRes] = await Promise.all([
+        usersAPI.getMe(),
+        answersAPI.getMyAnswers(),
+        questionsAPI.getAll(),
+        friendsAPI.getFriends().catch(() => ({ data: { friends: [] } })),
+      ]);
+
+      const fetchedUser = meRes.data.user;
+      setLocalUser(fetchedUser);
+      setUser(fetchedUser);
+
+      const questionsMap: Record<string, Question> = {};
+      for (const q of questionsRes.data.questions) {
+        questionsMap[q.id] = q;
+      }
+
+      const enriched: EnrichedAnswer[] = answersRes.data.answers.map((a) => ({
+        ...a,
+        questionText: questionsMap[a.questionId]?.text ?? 'Unknown question',
+        category: questionsMap[a.questionId]?.category,
+      }));
+
+      // Sort newest first
+      enriched.sort(
+        (a, b) =>
+          new Date(b.answeredAt).getTime() - new Date(a.answeredAt).getTime()
+      );
+
+      setAnswers(enriched);
+      setFriendsCount((friendsRes.data.friends ?? []).length);
+    } catch (err: any) {
+      setError('Failed to load profile.');
+    } finally {
+      setLoading(false);
+    }
+  }, [setUser]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // ── Derived ──────────────────────────────────────────────────────────────
 
   const displayUser: User = user ?? {
     id: 'placeholder',
     nickname: 'You',
     createdAt: new Date().toISOString().slice(0, 10),
   };
+
+  const last10 = answers.slice(0, 10);
+
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <ScrollView
@@ -168,8 +154,12 @@ export default function ProfileScreen() {
       {/* ── Profile header ── */}
       <View style={styles.headerSection}>
         <View style={styles.avatarRow}>
-          <Avatar user={displayUser} />
-          <TouchableOpacity style={styles.editButton} activeOpacity={0.75}>
+          <Avatar userId={displayUser.id} size={100} />
+          <TouchableOpacity
+            style={styles.editButton}
+            activeOpacity={0.75}
+            onPress={() => navigation.navigate('Settings')}
+          >
             <Text style={styles.editButtonText}>Edit Profile</Text>
           </TouchableOpacity>
         </View>
@@ -182,29 +172,75 @@ export default function ProfileScreen() {
 
       {/* ── Stats row ── */}
       <View style={styles.statsRow}>
-        <StatItem value={MOCK_STATS.answers} label="answers" />
+        <StatItem value={answers.length} label="answers" />
         <View style={styles.statSeparator} />
-        <StatItem value={MOCK_STATS.friends} label="friends" />
+        <StatItem value={friendsCount} label="friends" />
         <View style={styles.statSeparator} />
-        <StatItem value={MOCK_STATS.reactions} label="reactions" />
+        <StatItem value="—" label="reactions" />
       </View>
 
       {/* ── Answers section ── */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>My Answers</Text>
-          <Text style={styles.sectionCount}>{MOCK_STATS.answers} total</Text>
+          {!loading && answers.length > 0 && (
+            <Text style={styles.sectionCount}>{answers.length} total</Text>
+          )}
         </View>
 
-        {MOCK_ANSWERS.map((item) => (
-          <AnswerCard key={item.id} item={item} />
-        ))}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator color="#7C3AED" />
+          </View>
+        ) : error ? (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>{error}</Text>
+            <TouchableOpacity
+              style={styles.retryButton}
+              onPress={fetchData}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.retryText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        ) : answers.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyText}>
+              No answers yet. Answer today's question!
+            </Text>
+          </View>
+        ) : (
+          <>
+            {last10.map((item) => (
+              <AnswerCard key={item.id} item={item} />
+            ))}
+
+            {answers.length > 10 && (
+              <TouchableOpacity
+                style={styles.viewAllButton}
+                activeOpacity={0.8}
+                onPress={() =>
+                  navigation.navigate('AllAnswers', {
+                    userId: displayUser.id,
+                    nickname: displayUser.nickname,
+                    isOwnProfile: true,
+                  })
+                }
+              >
+                <Text style={styles.viewAllText}>
+                  View All ({answers.length})
+                </Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
       </View>
     </ScrollView>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -226,29 +262,6 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
     marginBottom: 16,
-  },
-  avatarImage: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 3,
-    borderColor: '#7C3AED',
-  },
-  avatarPlaceholder: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#3b1f6e',
-    borderWidth: 3,
-    borderColor: '#7C3AED',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarInitials: {
-    fontSize: 36,
-    fontWeight: '700',
-    color: '#ffffff',
-    letterSpacing: 1,
   },
   editButton: {
     position: 'absolute',
@@ -346,6 +359,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 16,
     gap: 12,
+    marginBottom: 4,
   },
   answerCardTop: {
     flexDirection: 'row',
@@ -375,5 +389,64 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#cccccc',
     lineHeight: 21,
+  },
+
+  // View all button
+  viewAllButton: {
+    borderWidth: 1,
+    borderColor: '#222222',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    backgroundColor: '#111111',
+    marginTop: 4,
+  },
+  viewAllText: {
+    fontSize: 14,
+    color: '#9F7AEA',
+    fontWeight: '600',
+  },
+
+  // States
+  loadingContainer: {
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  errorContainer: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    gap: 12,
+  },
+  errorText: {
+    fontSize: 14,
+    color: '#ef4444',
+    textAlign: 'center',
+  },
+  retryButton: {
+    borderWidth: 1,
+    borderColor: '#222222',
+    borderRadius: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#111111',
+  },
+  retryText: {
+    fontSize: 14,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  emptyCard: {
+    backgroundColor: '#111111',
+    borderWidth: 1,
+    borderColor: '#1a1a1a',
+    borderRadius: 14,
+    padding: 24,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 14,
+    color: '#555555',
+    textAlign: 'center',
+    lineHeight: 20,
   },
 });

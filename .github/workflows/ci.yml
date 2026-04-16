@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  # Job 1: Type-check the React Native app
+  app-typecheck:
+    name: App — TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install
+      - name: Type check
+        run: bunx tsc --noEmit
+
+  # Job 2: Server unit tests
+  server-tests:
+    name: Server — Tests
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+    env:
+      MONGODB_URI: mongodb://localhost:27017/data-test
+      JWT_SECRET: test-secret-ci
+      PORT: 3001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install server dependencies
+        run: cd server && bun install
+      - name: Run tests
+        run: cd server && bun test --timeout 30000
+
+  # Job 3: Server TypeScript check
+  server-typecheck:
+    name: Server — TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install server dependencies
+        run: cd server && bun install
+      - name: Type check
+        run: cd server && bunx tsc --noEmit

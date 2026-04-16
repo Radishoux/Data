@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,14 +8,17 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useStore } from '../../store/useStore';
 import { getTodayQuestion, CATEGORY_EMOJI } from '../../data/questions';
+import { questionsAPI, answersAPI } from '../../services/api';
+import type { Question } from '../../types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getTodayString(): string {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return new Date().toISOString().slice(0, 10);
 }
 
 function formatDisplayDate(isoDate: string): string {
@@ -27,38 +30,72 @@ function formatDisplayDate(isoDate: string): string {
   });
 }
 
-function generateId(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function QuestionScreen() {
-  const { user, answers, addAnswer } = useStore();
+  const { user, addAnswer } = useStore();
+
+  // Server-fetched question (falls back to local data while loading)
+  const [question, setQuestion] = useState<Question>(getTodayQuestion());
   const [inputText, setInputText] = useState('');
+  const [alreadyAnswered, setAlreadyAnswered] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [initialLoading, setInitialLoading] = useState(true);
 
   const todayStr = getTodayString();
-  const question = getTodayQuestion();
+  const categoryEmoji = CATEGORY_EMOJI[question.category ?? 'Wild Card'] ?? '✨';
 
-  // Check if already answered
-  const existingAnswer = answers.find((a) => a.questionId === question.id);
-  const isAnswered = !!existingAnswer || submitted;
-  const displayedAnswer = existingAnswer?.content ?? (submitted ? inputText : '');
+  // Fetch today's question + check if already answered
+  useEffect(() => {
+    let cancelled = false;
+    async function init() {
+      try {
+        const [qRes, aRes] = await Promise.all([
+          questionsAPI.getToday(),
+          answersAPI.getMyAnswers(),
+        ]);
+        if (cancelled) return;
+        const serverQuestion = qRes.data.question;
+        setQuestion(serverQuestion);
+        const existing = aRes.data.answers.find(
+          (a) => a.questionId === serverQuestion.id
+        );
+        if (existing) setAlreadyAnswered(existing.content);
+      } catch {
+        // keep local fallback, no blocking error
+      } finally {
+        if (!cancelled) setInitialLoading(false);
+      }
+    }
+    init();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const categoryEmoji =
-    CATEGORY_EMOJI[question.category ?? 'Wild Card'] ?? '✨';
+  const isAnswered = !!alreadyAnswered || submitted;
+  const displayedAnswer = alreadyAnswered ?? (submitted ? inputText : '');
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const trimmed = inputText.trim();
-    if (!trimmed || !user) return;
-    addAnswer({
-      id: generateId(),
-      userId: user.id,
-      questionId: question.id,
-      content: trimmed,
-      answeredAt: new Date().toISOString(),
-    });
-    setSubmitted(true);
+    if (!trimmed || !user || submitting) return;
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      const res = await answersAPI.postAnswer({
+        questionId: question.id,
+        content: trimmed,
+      });
+      addAnswer(res.data.answer);
+      setSubmitted(true);
+    } catch (err: any) {
+      setSubmitError(
+        err.response?.data?.error ?? 'Failed to submit. Please try again.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -90,19 +127,27 @@ export default function QuestionScreen() {
         >
           <View style={styles.cardInner}>
             <Text style={styles.questionLabel}>TODAY'S QUESTION</Text>
-            <Text style={styles.questionText}>{question.text}</Text>
+            {initialLoading ? (
+              <ActivityIndicator color="#7C3AED" style={{ marginVertical: 8 }} />
+            ) : (
+              <Text style={styles.questionText}>{question.text}</Text>
+            )}
           </View>
         </LinearGradient>
 
         {/* ── Answer area ── */}
-        {isAnswered ? (
-          <AnsweredView answer={displayedAnswer} />
-        ) : (
-          <InputView
-            value={inputText}
-            onChange={setInputText}
-            onSubmit={handleSubmit}
-          />
+        {!initialLoading && (
+          isAnswered ? (
+            <AnsweredView answer={displayedAnswer} />
+          ) : (
+            <InputView
+              value={inputText}
+              onChange={setInputText}
+              onSubmit={handleSubmit}
+              loading={submitting}
+              error={submitError}
+            />
+          )
         )}
       </ScrollView>
     </KeyboardAvoidingView>
@@ -135,12 +180,16 @@ function InputView({
   value,
   onChange,
   onSubmit,
+  loading,
+  error,
 }: {
   value: string;
   onChange: (t: string) => void;
   onSubmit: () => void;
+  loading: boolean;
+  error: string;
 }) {
-  const canSubmit = value.trim().length > 0;
+  const canSubmit = value.trim().length > 0 && !loading;
 
   return (
     <View style={styles.inputWrapper}>
@@ -155,7 +204,9 @@ function InputView({
         numberOfLines={6}
         textAlignVertical="top"
         autoCorrect
+        editable={!loading}
       />
+      {error ? <Text style={styles.submitError}>{error}</Text> : null}
       <TouchableOpacity
         style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
         onPress={onSubmit}
@@ -168,9 +219,13 @@ function InputView({
           end={{ x: 1, y: 0 }}
           style={styles.submitGradient}
         >
-          <Text style={[styles.submitText, !canSubmit && styles.submitTextDisabled]}>
-            Submit Answer
-          </Text>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={[styles.submitText, !canSubmit && styles.submitTextDisabled]}>
+              Submit Answer
+            </Text>
+          )}
         </LinearGradient>
       </TouchableOpacity>
       <Text style={styles.hint}>Your answer is visible to your friends</Text>
@@ -268,6 +323,11 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     minHeight: 140,
     lineHeight: 24,
+  },
+  submitError: {
+    fontSize: 13,
+    color: '#EF4444',
+    textAlign: 'center',
   },
   submitButton: {
     borderRadius: 14,

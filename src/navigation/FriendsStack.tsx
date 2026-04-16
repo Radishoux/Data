@@ -3,6 +3,8 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { FriendsStackParamList } from './types';
 import FriendsScreen from '../screens/friends/FriendsScreen';
 import ChatScreen from '../screens/friends/ChatScreen';
+import AllAnswersScreen from '../screens/profile/AllAnswersScreen';
+import FriendProfileScreen from '../screens/friends/FriendProfileScreen';
 
 const Stack = createNativeStackNavigator<FriendsStackParamList>();
 
@@ -45,6 +47,16 @@ const FriendsStack: React.FC = () => {
           title: route.params.friendNickname,
           headerBackTitle: 'Back',
         })}
+      />
+      <Stack.Screen
+        name="AllAnswers"
+        component={AllAnswersScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="FriendProfile"
+        component={FriendProfileScreen}
+        options={{ headerShown: false }}
       />
     </Stack.Navigator>
   );

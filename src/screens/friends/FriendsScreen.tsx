@@ -1,16 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   Pressable,
+  TextInput,
+  ActivityIndicator,
+  RefreshControl,
+  Modal,
   TextStyle,
   ViewStyle,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { FriendsStackParamList } from '../../navigation/types';
+import { friendsAPI, answersAPI, questionsAPI } from '../../services/api';
+import { FriendWithUser, FriendRequest, FriendTodayAnswer } from '../../types';
+import Avatar from '../../components/Avatar';
+
+type FriendsNav = NativeStackNavigationProp<FriendsStackParamList>;
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -22,61 +32,11 @@ const C = {
   accentLight: '#9F7AEA',
   text: '#ffffff',
   muted: '#888888',
+  success: '#22C55E',
+  error: '#EF4444',
 };
-
-// ─── Mock data ─────────────────────────────────────────────────────────────────
-const TODAY_QUESTION = 'If you could instantly master any skill, what would it be and why?';
-
-const mockFriends = [
-  { id: 'f1', nickname: 'Alex', avatarUri: null, online: true },
-  { id: 'f2', nickname: 'Jordan', avatarUri: null, online: false },
-  { id: 'f3', nickname: 'Sam', avatarUri: null, online: true },
-];
-
-type TodayAnswer = {
-  friendId: string;
-  nickname: string;
-  answer: string;
-  reactions: Record<string, number>;
-};
-
-const mockTodayAnswers: TodayAnswer[] = [
-  {
-    friendId: 'f1',
-    nickname: 'Alex',
-    answer: "I'd master coding — imagine building anything in your head instantly.",
-    reactions: { '❤️': 2, '🔥': 3 },
-  },
-  {
-    friendId: 'f2',
-    nickname: 'Jordan',
-    answer: "Music production. I've always wanted to make beats that move people.",
-    reactions: { '😂': 1, '👏': 2 },
-  },
-];
 
 const EMOJI_PICKER = ['❤️', '😂', '🔥', '🤔', '😮', '👏'];
-
-// ─── Avatar ────────────────────────────────────────────────────────────────────
-function Avatar({ nickname, size = 44 }: { nickname: string; size?: number }) {
-  const initials = nickname.slice(0, 2).toUpperCase();
-  const hue = (nickname.charCodeAt(0) * 37) % 360;
-  return (
-    <View
-      style={[
-        styles.avatar,
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          backgroundColor: `hsl(${hue}, 55%, 30%)`,
-        },
-      ]}
-    >
-      <Text style={[styles.avatarText, { fontSize: size * 0.36 }]}>{initials}</Text>
-    </View>
-  );
-}
 
 // ─── Reaction row ──────────────────────────────────────────────────────────────
 function ReactionRow({
@@ -121,50 +81,55 @@ function EmojiPicker({
   onClose: () => void;
 }) {
   return (
-    <Pressable style={styles.pickerOverlay} onPress={onClose}>
-      <View style={styles.pickerContainer}>
-        {EMOJI_PICKER.map((emoji) => (
-          <TouchableOpacity
-            key={emoji}
-            style={styles.pickerEmoji}
-            onPress={() => {
-              onSelect(emoji);
-              onClose();
-            }}
-            activeOpacity={0.6}
-          >
-            <Text style={styles.pickerEmojiText}>{emoji}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </Pressable>
+    <Modal transparent visible animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.pickerOverlay} onPress={onClose}>
+        <View style={styles.pickerContainer}>
+          {EMOJI_PICKER.map((emoji) => (
+            <TouchableOpacity
+              key={emoji}
+              style={styles.pickerEmoji}
+              onPress={() => {
+                onSelect(emoji);
+                onClose();
+              }}
+              activeOpacity={0.6}
+            >
+              <Text style={styles.pickerEmojiText}>{emoji}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </Pressable>
+    </Modal>
   );
 }
 
-// ─── Today's Answer card ───────────────────────────────────────────────────────
+// ─── Answer card ──────────────────────────────────────────────────────────────
 function AnswerCard({
   item,
   onChat,
 }: {
-  item: TodayAnswer;
+  item: FriendTodayAnswer;
   onChat: () => void;
 }) {
-  const [reactions, setReactions] = useState<Record<string, number>>(item.reactions);
+  const [reactions, setReactions] = useState<Record<string, number>>({});
   const [myReactions, setMyReactions] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const TRUNCATE = 100;
-  const shouldTruncate = item.answer.length > TRUNCATE;
+  const nickname = item.user?.nickname ?? 'Unknown';
+  const userId = item.user?.id ?? 'unknown';
+  const answerText = item.answer.content;
+  const shouldTruncate = answerText.length > TRUNCATE;
   const displayText =
-    shouldTruncate && !expanded ? item.answer.slice(0, TRUNCATE) + '…' : item.answer;
+    shouldTruncate && !expanded ? answerText.slice(0, TRUNCATE) + '…' : answerText;
 
   const toggleReaction = (emoji: string) => {
     setReactions((prev) => {
       const current = prev[emoji] ?? 0;
       if (myReactions.has(emoji)) {
         const next = { ...prev, [emoji]: current - 1 };
-        if (next[emoji] <= 0) delete next[emoji];
+        if (next[emoji]! <= 0) delete next[emoji];
         return next;
       }
       return { ...prev, [emoji]: current + 1 };
@@ -178,19 +143,16 @@ function AnswerCard({
   };
 
   const addNewReaction = (emoji: string) => {
-    if (!myReactions.has(emoji)) {
-      toggleReaction(emoji);
-    }
+    if (!myReactions.has(emoji)) toggleReaction(emoji);
   };
 
   return (
     <>
       <TouchableOpacity style={styles.answerCard} onPress={onChat} activeOpacity={0.85}>
-        {/* Header */}
         <View style={styles.cardHeader}>
-          <Avatar nickname={item.nickname} size={42} />
+          <Avatar userId={userId} size={42} />
           <View style={styles.cardHeaderText}>
-            <Text style={styles.cardNickname}>{item.nickname}</Text>
+            <Text style={styles.cardNickname}>{nickname}</Text>
             <Text style={styles.cardSubtitle}>answered today's question</Text>
           </View>
           <TouchableOpacity style={styles.chatBtn} onPress={onChat} activeOpacity={0.8}>
@@ -198,11 +160,8 @@ function AnswerCard({
           </TouchableOpacity>
         </View>
 
-        {/* Answer */}
         <View style={styles.answerBody}>
-          <Text style={styles.answerText}>
-            "{displayText}"
-          </Text>
+          <Text style={styles.answerText}>"{displayText}"</Text>
           {shouldTruncate && (
             <TouchableOpacity
               onPress={(e) => {
@@ -215,7 +174,6 @@ function AnswerCard({
           )}
         </View>
 
-        {/* Reactions */}
         <ReactionRow
           reactions={reactions}
           myReactions={myReactions}
@@ -231,21 +189,37 @@ function AnswerCard({
   );
 }
 
-// ─── Friend row ────────────────────────────────────────────────────────────────
+// ─── Request row ──────────────────────────────────────────────────────────────
+function RequestRow({
+  item,
+  onAccept,
+}: {
+  item: FriendRequest;
+  onAccept: () => void;
+}) {
+  return (
+    <View style={styles.friendRow}>
+      <Avatar userId={item.from?.id ?? 'unknown'} size={42} />
+      <Text style={styles.friendNickname}>{item.from?.nickname ?? 'Unknown'}</Text>
+      <TouchableOpacity style={styles.acceptBtn} onPress={onAccept} activeOpacity={0.8}>
+        <Text style={styles.acceptBtnText}>Accept</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+// ─── Friend row ───────────────────────────────────────────────────────────────
 function FriendRow({
   friend,
   onView,
 }: {
-  friend: (typeof mockFriends)[0];
+  friend: FriendWithUser;
   onView: () => void;
 }) {
   return (
     <View style={styles.friendRow}>
-      <View style={styles.friendAvatarWrap}>
-        <Avatar nickname={friend.nickname} size={42} />
-        <View style={[styles.onlineDot, { backgroundColor: friend.online ? '#22c55e' : '#444' }]} />
-      </View>
-      <Text style={styles.friendNickname}>{friend.nickname}</Text>
+      <Avatar userId={friend.user?.id ?? 'unknown'} size={42} />
+      <Text style={styles.friendNickname}>{friend.user?.nickname ?? 'Unknown'}</Text>
       <TouchableOpacity style={styles.viewBtn} onPress={onView} activeOpacity={0.8}>
         <Text style={styles.viewBtnText}>View</Text>
       </TouchableOpacity>
@@ -253,81 +227,238 @@ function FriendRow({
   );
 }
 
-// ─── Main screen ───────────────────────────────────────────────────────────────
+// ─── Main screen ──────────────────────────────────────────────────────────────
 export default function FriendsScreen() {
-  const navigation = useNavigation<any>();
+  const navigation = useNavigation<FriendsNav>();
 
-  const goToChat = (friendId: string, friendNickname: string) => {
-    navigation.navigate('Chat', { friendId, friendNickname });
+  const [friends, setFriends] = useState<FriendWithUser[]>([]);
+  const [requests, setRequests] = useState<FriendRequest[]>([]);
+  const [todayFeed, setTodayFeed] = useState<FriendTodayAnswer[]>([]);
+  const [todayQuestion, setTodayQuestion] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [addFriendText, setAddFriendText] = useState('');
+  const [addFriendLoading, setAddFriendLoading] = useState(false);
+  const [addFriendError, setAddFriendError] = useState('');
+  const [addFriendSuccess, setAddFriendSuccess] = useState('');
+
+  const fetchData = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const [friendsRes, requestsRes, questionRes, feedRes] = await Promise.all([
+        friendsAPI.getFriends(),
+        friendsAPI.getRequests(),
+        questionsAPI.getToday(),
+        answersAPI
+          .getFriendsTodayFeed()
+          .catch(() => ({ data: { questionId: '', answers: [] as FriendTodayAnswer[] } })),
+      ]);
+      setFriends(friendsRes.data.friends);
+      setRequests(requestsRes.data.requests);
+      setTodayQuestion(questionRes.data.question.text);
+      setTodayFeed(feedRes.data.answers);
+    } catch {
+      // show empty states on error
+    } finally {
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const handleAddFriend = async () => {
+    const id = addFriendText.trim();
+    if (!id) return;
+    setAddFriendLoading(true);
+    setAddFriendError('');
+    setAddFriendSuccess('');
+    try {
+      await friendsAPI.sendRequest({ identifier: id });
+      setAddFriendSuccess('Friend request sent!');
+      setAddFriendText('');
+    } catch (err: any) {
+      setAddFriendError(err.response?.data?.error ?? 'Could not send request.');
+    } finally {
+      setAddFriendLoading(false);
+    }
   };
 
-  return (
-    <View style={styles.container}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* ── Section A: Today's Answers ── */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Today's Answers</Text>
-          <View style={styles.sectionBadge}>
-            <Text style={styles.sectionBadgeText}>{mockTodayAnswers.length}</Text>
-          </View>
-        </View>
+  const handleAccept = async (requestId: string) => {
+    try {
+      await friendsAPI.acceptRequest(requestId);
+      await fetchData();
+    } catch {
+      /* ignore */
+    }
+  };
 
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator color={C.accent} size="large" />
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => fetchData(true)}
+          tintColor={C.accent}
+        />
+      }
+    >
+      {/* ── Pending Requests ── */}
+      {requests.length > 0 && (
+        <>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Requests</Text>
+            <View style={styles.sectionBadge}>
+              <Text style={styles.sectionBadgeText}>{requests.length}</Text>
+            </View>
+          </View>
+          {requests.map((item) => (
+            <RequestRow
+              key={item.request.id}
+              item={item}
+              onAccept={() => handleAccept(item.request.id)}
+            />
+          ))}
+        </>
+      )}
+
+      {/* ── Today's Answers ── */}
+      <View style={[styles.sectionHeader, requests.length > 0 ? { marginTop: 28 } : {}]}>
+        <Text style={styles.sectionTitle}>Today's Answers</Text>
+        {todayFeed.length > 0 && (
+          <View style={styles.sectionBadge}>
+            <Text style={styles.sectionBadgeText}>{todayFeed.length}</Text>
+          </View>
+        )}
+      </View>
+
+      {todayQuestion ? (
         <View style={styles.questionBanner}>
           <Text style={styles.questionLabel}>Today's question</Text>
-          <Text style={styles.questionText}>{TODAY_QUESTION}</Text>
+          <Text style={styles.questionText}>{todayQuestion}</Text>
         </View>
+      ) : null}
 
-        {mockTodayAnswers.map((item) => (
+      {todayFeed.length === 0 ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>No friends have answered today yet.</Text>
+        </View>
+      ) : (
+        todayFeed.map((item) => (
           <AnswerCard
-            key={item.friendId}
+            key={item.answer.id}
             item={item}
-            onChat={() => goToChat(item.friendId, item.nickname)}
+            onChat={() => {
+              if (item.user) {
+                navigation.navigate('Chat', {
+                  friendId: item.user.id,
+                  friendNickname: item.user.nickname,
+                });
+              }
+            }}
           />
-        ))}
+        ))
+      )}
 
-        {/* ── Section B: Friends ── */}
-        <View style={[styles.sectionHeader, { marginTop: 32 }]}>
-          <Text style={styles.sectionTitle}>Friends</Text>
-        </View>
+      {/* ── Friends ── */}
+      <View style={[styles.sectionHeader, { marginTop: 32 }]}>
+        <Text style={styles.sectionTitle}>Friends</Text>
+        {friends.length > 0 && (
+          <Text style={styles.friendCount}>{friends.length}</Text>
+        )}
+      </View>
 
+      {/* Add friend */}
+      <View style={styles.addFriendRow}>
+        <TextInput
+          style={styles.addFriendInput}
+          placeholder="Add by email or nickname"
+          placeholderTextColor={C.muted}
+          value={addFriendText}
+          onChangeText={(t) => {
+            setAddFriendText(t);
+            setAddFriendError('');
+            setAddFriendSuccess('');
+          }}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="send"
+          onSubmitEditing={handleAddFriend}
+        />
         <TouchableOpacity
-          style={styles.addFriendBtn}
-          onPress={() => Alert.alert('Add Friend', 'Friend request feature coming soon!')}
+          style={[
+            styles.addFriendSendBtn,
+            (!addFriendText.trim() || addFriendLoading) && styles.addFriendSendBtnDisabled,
+          ]}
+          onPress={handleAddFriend}
+          disabled={addFriendLoading || !addFriendText.trim()}
           activeOpacity={0.8}
         >
-          <Text style={styles.addFriendText}>+ Add Friend</Text>
+          {addFriendLoading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.addFriendSendText}>+</Text>
+          )}
         </TouchableOpacity>
+      </View>
+      {addFriendError ? <Text style={styles.addFriendError}>{addFriendError}</Text> : null}
+      {addFriendSuccess ? <Text style={styles.addFriendSuccess}>{addFriendSuccess}</Text> : null}
 
-        {mockFriends.map((friend) => (
+      {friends.length === 0 ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>Add friends to see their answers.</Text>
+        </View>
+      ) : (
+        friends.map((item) => (
           <FriendRow
-            key={friend.id}
-            friend={friend}
-            onView={() => goToChat(friend.id, friend.nickname)}
+            key={item.friendship.id}
+            friend={item}
+            onView={() => {
+              if (item.user) {
+                navigation.navigate('FriendProfile', {
+                  friendId: item.user.id,
+                  friendNickname: item.user.nickname,
+                });
+              }
+            }}
           />
-        ))}
+        ))
+      )}
 
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </View>
+      <View style={{ height: 40 }} />
+    </ScrollView>
   );
 }
 
-// ─── Styles ────────────────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: C.bg,
   } as ViewStyle,
-  scroll: {
-    flex: 1,
-  } as ViewStyle,
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 20,
+  } as ViewStyle,
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: C.bg,
+    justifyContent: 'center',
+    alignItems: 'center',
   } as ViewStyle,
 
   // Section headers
@@ -354,6 +485,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   } as TextStyle,
+  friendCount: {
+    fontSize: 14,
+    color: C.muted,
+    fontWeight: '500',
+  } as TextStyle,
 
   // Question banner
   questionBanner: {
@@ -377,6 +513,22 @@ const styles = StyleSheet.create({
     color: C.muted,
     lineHeight: 20,
     fontStyle: 'italic',
+  } as TextStyle,
+
+  // Empty state
+  emptyCard: {
+    backgroundColor: C.surface,
+    borderRadius: 14,
+    padding: 20,
+    alignItems: 'center',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+  } as ViewStyle,
+  emptyText: {
+    fontSize: 14,
+    color: C.muted,
+    textAlign: 'center',
   } as TextStyle,
 
   // Answer card
@@ -418,8 +570,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   } as TextStyle,
-
-  // Answer body
   answerBody: {
     marginBottom: 14,
   } as ViewStyle,
@@ -519,17 +669,7 @@ const styles = StyleSheet.create({
     fontSize: 22,
   } as TextStyle,
 
-  // Avatar
-  avatar: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  } as ViewStyle,
-  avatarText: {
-    color: '#fff',
-    fontWeight: '700',
-  } as TextStyle,
-
-  // Friend row
+  // Request row
   friendRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -541,24 +681,22 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     gap: 12,
   } as ViewStyle,
-  friendAvatarWrap: {
-    position: 'relative',
-  } as ViewStyle,
-  onlineDot: {
-    position: 'absolute',
-    bottom: 1,
-    right: 1,
-    width: 11,
-    height: 11,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: C.surface,
-  } as ViewStyle,
   friendNickname: {
     flex: 1,
     fontSize: 15,
     fontWeight: '600',
     color: C.text,
+  } as TextStyle,
+  acceptBtn: {
+    backgroundColor: C.accent,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+  } as ViewStyle,
+  acceptBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   } as TextStyle,
   viewBtn: {
     borderWidth: 1,
@@ -573,19 +711,48 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   } as TextStyle,
 
-  // Add friend button
-  addFriendBtn: {
-    borderWidth: 1.5,
-    borderColor: C.accent,
-    borderRadius: 14,
-    paddingVertical: 13,
-    alignItems: 'center',
-    marginBottom: 12,
+  // Add friend
+  addFriendRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 6,
   } as ViewStyle,
-  addFriendText: {
-    color: C.accentLight,
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+  addFriendInput: {
+    flex: 1,
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: C.text,
+  } as TextStyle,
+  addFriendSendBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+    backgroundColor: C.accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+  } as ViewStyle,
+  addFriendSendBtnDisabled: {
+    opacity: 0.4,
+  } as ViewStyle,
+  addFriendSendText: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '600',
+    lineHeight: 26,
+  } as TextStyle,
+  addFriendError: {
+    fontSize: 13,
+    color: C.error,
+    marginBottom: 8,
+  } as TextStyle,
+  addFriendSuccess: {
+    fontSize: 13,
+    color: C.success,
+    marginBottom: 8,
   } as TextStyle,
 });

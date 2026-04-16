@@ -3,8 +3,9 @@ import { Text, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { MainTabParamList } from './types';
 import QuestionScreen from '../screens/question/QuestionScreen';
-import ProfileScreen from '../screens/profile/ProfileScreen';
+import ProfileStack from './ProfileStack';
 import FriendsStack from './FriendsStack';
+import SettingsScreen from '../screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -59,7 +60,7 @@ const TabNavigator: React.FC = () => {
       />
       <Tab.Screen
         name="Profile"
-        component={ProfileScreen}
+        component={ProfileStack}
         options={{
           tabBarLabel: 'Profile',
           tabBarIcon: ({ focused }) => <TabIcon symbol="👤" focused={focused} />,
@@ -71,6 +72,14 @@ const TabNavigator: React.FC = () => {
         options={{
           tabBarLabel: 'Friends',
           tabBarIcon: ({ focused }) => <TabIcon symbol="👥" focused={focused} />,
+        }}
+      />
+      <Tab.Screen
+        name="Settings"
+        component={SettingsScreen}
+        options={{
+          tabBarLabel: 'Settings',
+          tabBarIcon: ({ focused }) => <TabIcon symbol="⚙️" focused={focused} />,
         }}
       />
     </Tab.Navigator>

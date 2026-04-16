@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,13 @@ import {
   Platform,
   ViewStyle,
   TextStyle,
+  ActivityIndicator,
 } from 'react-native';
 import { useRoute, RouteProp } from '@react-navigation/native';
+import { WS_BASE_URL, API_BASE_URL } from '../../config/api';
+import { useStore } from '../../store';
+import Avatar from '../../components/Avatar';
+import type { Message } from '../../types';
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -25,66 +30,27 @@ const C = {
   muted: '#888888',
 };
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+// ─── Route types ───────────────────────────────────────────────────────────────
 type RootParamList = {
   Chat: { friendId: string; friendNickname: string };
 };
 
-type Message = {
-  id: string;
-  senderId: string;
-  content: string;
-  createdAt: number;
-};
-
-// ─── Mock data ─────────────────────────────────────────────────────────────────
-const TODAY_QUESTION = 'If you could instantly master any skill, what would it be and why?';
-
-const mockMessages: Message[] = [
-  { id: 'm1', senderId: 'me', content: 'Wait your answer was so good!', createdAt: Date.now() - 300000 },
-  { id: 'm2', senderId: 'f1', content: 'Haha thanks! What would you pick?', createdAt: Date.now() - 240000 },
-  { id: 'm3', senderId: 'me', content: 'Probably languages, to talk to anyone in the world', createdAt: Date.now() - 180000 },
-  { id: 'm4', senderId: 'f1', content: "That's actually so much better than mine 😭", createdAt: Date.now() - 60000 },
-];
+// ─── WS connection state ───────────────────────────────────────────────────────
+type WsStatus = 'connecting' | 'open' | 'error' | 'closed';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-function formatTime(ts: number): string {
+function formatTime(ts: string | number): string {
   const d = new Date(ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
 
-function Avatar({ nickname, size = 36 }: { nickname: string; size?: number }) {
-  const initials = nickname.slice(0, 2).toUpperCase();
-  const hue = (nickname.charCodeAt(0) * 37) % 360;
-  return (
-    <View
-      style={[
-        styles.avatar,
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          backgroundColor: `hsl(${hue}, 55%, 30%)`,
-        },
-      ]}
-    >
-      <Text style={[styles.avatarText, { fontSize: size * 0.36 }]}>{initials}</Text>
-    </View>
-  );
-}
-
 // ─── Message bubble ────────────────────────────────────────────────────────────
 function MessageBubble({ message, isMe }: { message: Message; isMe: boolean }) {
   return (
     <View style={[styles.bubbleRow, isMe ? styles.bubbleRowMe : styles.bubbleRowThem]}>
-      <View
-        style={[
-          styles.bubble,
-          isMe ? styles.bubbleMe : styles.bubbleThem,
-        ]}
-      >
+      <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
         <Text style={[styles.bubbleText, isMe ? styles.bubbleTextMe : styles.bubbleTextThem]}>
           {message.content}
         </Text>
@@ -97,11 +63,11 @@ function MessageBubble({ message, isMe }: { message: Message; isMe: boolean }) {
 }
 
 // ─── Context card ──────────────────────────────────────────────────────────────
-function ContextCard() {
+function ContextCard({ question }: { question: string }) {
   return (
     <View style={styles.contextCard}>
       <Text style={styles.contextLabel}>💬 Chatting about today's question</Text>
-      <Text style={styles.contextQuestion}>"{TODAY_QUESTION}"</Text>
+      <Text style={styles.contextQuestion}>"{question}"</Text>
     </View>
   );
 }
@@ -118,39 +84,188 @@ function SendIcon({ color }: { color: string }) {
 // ─── Main screen ───────────────────────────────────────────────────────────────
 export default function ChatScreen() {
   const route = useRoute<RouteProp<RootParamList, 'Chat'>>();
-  const { friendId, friendNickname } = route.params ?? { friendId: 'f1', friendNickname: 'Friend' };
+  const { friendId, friendNickname } = route.params ?? { friendId: '', friendNickname: 'Friend' };
 
-  const [messages, setMessages] = useState<Message[]>(mockMessages);
+  const token = useStore((s) => s.token);
+  const myUserId = useStore((s) => s.user?.id ?? null);
+
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
-  const flatListRef = useRef<FlatList>(null);
+  const [wsStatus, setWsStatus] = useState<WsStatus>('connecting');
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [todayQuestion, setTodayQuestion] = useState('Today\'s question');
 
+  const flatListRef = useRef<FlatList>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // ── Fetch today's question ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API_BASE_URL}/api/questions/today`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (
+          data &&
+          typeof data === 'object' &&
+          'question' in data &&
+          data.question &&
+          typeof data.question === 'object' &&
+          'text' in data.question &&
+          typeof (data.question as Record<string, unknown>).text === 'string'
+        ) {
+          setTodayQuestion((data.question as { text: string }).text);
+        }
+      })
+      .catch(() => {/* non-critical */});
+  }, [token]);
+
+  // ── Fetch message history ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!token || !friendId) return;
+
+    setHistoryLoading(true);
+    fetch(`${API_BASE_URL}/api/messages/${friendId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (
+          data &&
+          typeof data === 'object' &&
+          'messages' in data &&
+          Array.isArray((data as { messages: unknown }).messages)
+        ) {
+          setMessages((data as { messages: Message[] }).messages);
+        }
+      })
+      .catch(() => {/* show empty history on error */})
+      .finally(() => setHistoryLoading(false));
+  }, [token, friendId]);
+
+  // ── WebSocket lifecycle ─────────────────────────────────────────────────────
+  const connectWs = useCallback(() => {
+    if (!token) return;
+
+    setWsStatus('connecting');
+    const ws = new WebSocket(`${WS_BASE_URL}/ws?token=${token}`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setWsStatus('open');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string) as {
+          type: string;
+          message?: Message;
+        };
+
+        if (data.type === 'message' || data.type === 'sent') {
+          if (data.message) {
+            setMessages((prev) => {
+              // Deduplicate by id — optimistic message gets replaced by confirmed one
+              const exists = prev.some((m) => m.id === data.message!.id);
+              if (exists) return prev;
+              return [...prev, data.message!];
+            });
+            setTimeout(() => {
+              flatListRef.current?.scrollToEnd({ animated: true });
+            }, 80);
+          }
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    };
+
+    ws.onerror = () => {
+      setWsStatus('error');
+    };
+
+    ws.onclose = () => {
+      setWsStatus('closed');
+    };
+  }, [token]);
+
+  useEffect(() => {
+    connectWs();
+    return () => {
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, [connectWs]);
+
+  // ── Auto-scroll when history loads ─────────────────────────────────────────
+  useEffect(() => {
+    if (!historyLoading && messages.length > 0) {
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 100);
+    }
+  }, [historyLoading]);
+
+  // ── Send message ────────────────────────────────────────────────────────────
   const sendMessage = useCallback(() => {
     const text = inputText.trim();
     if (!text) return;
 
-    const newMsg: Message = {
-      id: `msg-${Date.now()}`,
-      senderId: 'me',
+    // Optimistic UI — use a temp id that will be replaced by server confirmation
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg: Message = {
+      id: tempId,
+      senderId: myUserId ?? 'me',
+      receiverId: friendId,
       content: text,
-      createdAt: Date.now(),
+      createdAt: new Date().toISOString(),
+      read: false,
     };
 
-    setMessages((prev) => [...prev, newMsg]);
+    setMessages((prev) => [...prev, optimisticMsg]);
     setInputText('');
-
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
     }, 80);
-  }, [inputText]);
 
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: 'message',
+          receiverId: friendId,
+          content: text,
+        })
+      );
+    }
+  }, [inputText, friendId, myUserId]);
+
+  // ── Render helpers ──────────────────────────────────────────────────────────
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => (
-      <MessageBubble message={item} isMe={item.senderId === 'me'} />
-    ),
-    []
+    ({ item }: { item: Message }) => {
+      const isMe = item.senderId === myUserId || item.senderId === 'me';
+      return <MessageBubble message={item} isMe={isMe} />;
+    },
+    [myUserId]
   );
 
   const keyExtractor = useCallback((item: Message) => item.id, []);
+
+  // ── WS status indicator ─────────────────────────────────────────────────────
+  const wsStatusNode = () => {
+    if (wsStatus === 'connecting') {
+      return <Text style={styles.wsStatusConnecting}>Connecting...</Text>;
+    }
+    if (wsStatus === 'error' || wsStatus === 'closed') {
+      return (
+        <TouchableOpacity onPress={connectWs} style={styles.reconnectBtn}>
+          <Text style={styles.reconnectText}>Reconnect</Text>
+        </TouchableOpacity>
+      );
+    }
+    return null;
+  };
 
   return (
     <KeyboardAvoidingView
@@ -158,32 +273,44 @@ export default function ChatScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      {/* ── In-screen header (supplements nav header) ── */}
+      {/* ── In-screen header ── */}
       <View style={styles.screenHeader}>
-        <Avatar nickname={friendNickname} size={38} />
+        <Avatar userId={friendId} size={36} />
         <View style={styles.screenHeaderText}>
           <Text style={styles.screenHeaderName}>{friendNickname}</Text>
-          <Text style={styles.screenHeaderSub}>Friend</Text>
+          {wsStatusNode() ?? <Text style={styles.screenHeaderSub}>Friend</Text>}
         </View>
-        <View style={styles.onlineIndicator}>
-          <View style={styles.onlineDot} />
-          <Text style={styles.onlineText}>online</Text>
-        </View>
+        {wsStatus === 'open' && (
+          <View style={styles.onlineIndicator}>
+            <View style={styles.onlineDot} />
+            <Text style={styles.onlineText}>online</Text>
+          </View>
+        )}
       </View>
 
       {/* ── Messages ── */}
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        renderItem={renderItem}
-        keyExtractor={keyExtractor}
-        style={styles.messageList}
-        contentContainerStyle={styles.messageListContent}
-        showsVerticalScrollIndicator={false}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-        ListHeaderComponent={<ContextCard />}
-        keyboardShouldPersistTaps="handled"
-      />
+      {historyLoading ? (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator color={C.accentLight} />
+          <Text style={styles.loadingText}>Loading messages...</Text>
+        </View>
+      ) : (
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          style={styles.messageList}
+          contentContainerStyle={styles.messageListContent}
+          showsVerticalScrollIndicator={false}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+          ListHeaderComponent={<ContextCard question={todayQuestion} />}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No messages yet. Say hello!</Text>
+          }
+          keyboardShouldPersistTaps="handled"
+        />
+      )}
 
       {/* ── Input bar ── */}
       <View style={styles.inputBar}>
@@ -199,7 +326,10 @@ export default function ChatScreen() {
           blurOnSubmit={false}
         />
         <TouchableOpacity
-          style={[styles.sendBtn, inputText.trim() ? styles.sendBtnActive : styles.sendBtnInactive]}
+          style={[
+            styles.sendBtn,
+            inputText.trim() ? styles.sendBtnActive : styles.sendBtnInactive,
+          ]}
           onPress={sendMessage}
           activeOpacity={0.8}
           disabled={!inputText.trim()}
@@ -259,14 +389,20 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   } as TextStyle,
 
-  // Avatar
-  avatar: {
-    justifyContent: 'center',
-    alignItems: 'center',
+  // WS status
+  wsStatusConnecting: {
+    fontSize: 11,
+    color: C.muted,
+    marginTop: 2,
+  } as TextStyle,
+  reconnectBtn: {
+    marginTop: 2,
+    alignSelf: 'flex-start',
   } as ViewStyle,
-  avatarText: {
-    color: '#fff',
-    fontWeight: '700',
+  reconnectText: {
+    fontSize: 11,
+    color: C.accentLight,
+    fontWeight: '600',
   } as TextStyle,
 
   // Context card
@@ -291,6 +427,24 @@ const styles = StyleSheet.create({
     color: C.muted,
     lineHeight: 19,
     fontStyle: 'italic',
+  } as TextStyle,
+
+  // Loading / empty
+  loadingWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  } as ViewStyle,
+  loadingText: {
+    fontSize: 14,
+    color: C.muted,
+  } as TextStyle,
+  emptyText: {
+    textAlign: 'center',
+    color: C.muted,
+    fontSize: 14,
+    marginTop: 40,
   } as TextStyle,
 
   // Message list
